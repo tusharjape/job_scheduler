@@ -12,11 +12,14 @@ namespace {
 
 using namespace std::chrono_literals;
 
-QueuedJob MakeJob(std::uint64_t seq, JobType type, TimePoint submit_time) {
+QueuedJob MakeJob(std::uint64_t seq, JobType type, TimePoint submit_time,
+                  Role role = Role::kLive,
+                  Urgency urgency = Urgency::kNormal) {
   QueuedJob job;
   job.seq = seq;
-  job.role = Role::kLive;
+  job.role = role;
   job.type = type;
+  job.urgency = urgency;
   job.submit_time = submit_time;
   return job;
 }
@@ -54,8 +57,8 @@ void TestFullJobDoesNotStarveAfterWaitingKSeconds() {
   // Quick job submitted at t = 11s (waited 9s < K): runs BEFORE Full job.
   q.Push(MakeJob(2, JobType::kQuick, t0 + 11s));
 
-  // Quick job submitted at t = 12s (Full has now waited exactly K = 10s):
-  // This newly arriving Quick job NOT run ahead of Full.
+  // Quick job submitted at t = 12s (Full has now waited 10s):
+  // This newly arriving Quick job must NOT run ahead of Full.
   q.Push(MakeJob(3, JobType::kQuick, t0 + 12s));
 
   // Quick job submitted at t = 15s (waited 13s > K): also runs AFTER Full.
@@ -72,12 +75,12 @@ void TestSubmissionOrderForEqualJobs() {
   RoleQueue q(10s);
   const TimePoint t0{};
 
-  // Multiple Quick jobs at the exact same timestamp -> FIFO by seq (O3).
+  // Multiple Quick jobs at the exact same timestamp -> FIFO by seq.
   q.Push(MakeJob(10, JobType::kQuick, t0 + 1s));
   q.Push(MakeJob(11, JobType::kQuick, t0 + 1s));
   q.Push(MakeJob(12, JobType::kQuick, t0 + 1s));
 
-  // Multiple Full jobs at the exact same timestamp -> FIFO by seq (O3).
+  // Multiple Full jobs at the exact same timestamp -> FIFO by seq.
   q.Push(MakeJob(20, JobType::kFull, t0));
   q.Push(MakeJob(21, JobType::kFull, t0));
 
@@ -91,7 +94,7 @@ void TestSubmissionOrderForEqualJobs() {
 
 void TestZeroMaxWaitStillPrefersQuickAtSameTimestamp() {
   // Edge case: K = 0s. If Full and Quick arrive at the same timestamp,
-  // Prefer Quick over Full; if Full arrived earlier (t0 < t1),
+  // Quick is still preferred over Full; if Full arrived earlier (t0 < t1),
   // Full has waited > 0s and runs first.
   RoleQueue q(0s);
   const TimePoint t0{};
@@ -133,6 +136,46 @@ void TestLargeScaleFiftyThousandJobsScaleAndOrder() {
   assert(popped == kNumJobs);
 }
 
+void TestUrgentRerunsStartSoonerButNormalRerunsStillProgress() {
+  // K = 10s (full_max_wait), H = 30s (normal_rerun_max_wait).
+  RoleQueue q(/*full_max_wait=*/10s, /*normal_rerun_max_wait=*/30s);
+  const TimePoint t0{};
+
+  // At t = 0s: submit a Normal Quick rerun (v_ts = 0 + 30s = 30s) and a
+  // Normal Full rerun (v_ts = 0 + 10s + 30s = 40s).
+  q.Push(MakeJob(1, JobType::kQuick, t0, Role::kRerun, Urgency::kNormal));
+  q.Push(MakeJob(2, JobType::kFull, t0, Role::kRerun, Urgency::kNormal));
+
+  // At t = 5s: submit an Urgent Full rerun (v_ts = 5s + 10s = 15s) and an
+  // Urgent Quick rerun (v_ts = 5s).
+  q.Push(MakeJob(3, JobType::kFull, t0 + 5s, Role::kRerun, Urgency::kUrgent));
+  q.Push(MakeJob(4, JobType::kQuick, t0 + 5s, Role::kRerun, Urgency::kUrgent));
+
+  // At t = 30s: Normal Quick rerun (#1) has now waited H = 30s!
+  // Submit a new Urgent Quick rerun (#5, v_ts = 30s). It must NOT jump ahead
+  // of the waiting Normal Quick rerun (#1).
+  q.Push(MakeJob(5, JobType::kQuick, t0 + 30s, Role::kRerun, Urgency::kUrgent));
+
+  // At t = 45s: Normal Full rerun (#2, v_ts = 40s) has waited 45s (> K + H).
+  // Submit a new Urgent Quick rerun (#6, v_ts = 45s). It must run AFTER #2!
+  q.Push(MakeJob(6, JobType::kQuick, t0 + 45s, Role::kRerun, Urgency::kUrgent));
+
+  // Expected order:
+  // 1. #4 (Urgent Quick @ 5s, v_ts = 5s)
+  // 2. #3 (Urgent Full @ 5s, v_ts = 15s)
+  // 3. #1 (Normal Quick @ 0s, v_ts = 30s, seq = 1)
+  // 4. #5 (Urgent Quick @ 30s, v_ts = 30s, seq = 5)
+  // 5. #2 (Normal Full @ 0s, v_ts = 40s)
+  // 6. #6 (Urgent Quick @ 45s, v_ts = 45s)
+  assert(q.PopBest().seq == 4);
+  assert(q.PopBest().seq == 3);
+  assert(q.PopBest().seq == 1);
+  assert(q.PopBest().seq == 5);
+  assert(q.PopBest().seq == 2);
+  assert(q.PopBest().seq == 6);
+  assert(q.Empty());
+}
+
 void TestEmptyQueueThrows() {
   RoleQueue q(5s);
   bool threw_pop = false;
@@ -152,6 +195,7 @@ int main() {
   scheduler::TestFullJobDoesNotStarveAfterWaitingKSeconds();
   scheduler::TestSubmissionOrderForEqualJobs();
   scheduler::TestZeroMaxWaitStillPrefersQuickAtSameTimestamp();
+  scheduler::TestUrgentRerunsStartSoonerButNormalRerunsStillProgress();
   scheduler::TestLargeScaleFiftyThousandJobsScaleAndOrder();
   scheduler::TestEmptyQueueThrows();
   std::cout << "[PASS] Step 3: role_queue_test passed.\n";

@@ -51,6 +51,19 @@ void TestConfigValidation() {
     threw_negative_wait = true;
   }
   assert(threw_negative_wait);
+
+  // negative normal_rerun_max_wait must throw.
+  bool threw_negative_rerun_wait = false;
+  try {
+    SchedulerConfig bad{.total = 2,
+                        .rerun_max = 1,
+                        .full_max_wait = 1s,
+                        .normal_rerun_max_wait = -1s};
+    bad.Validate();
+  } catch (const std::invalid_argument&) {
+    threw_negative_rerun_wait = true;
+  }
+  assert(threw_negative_rerun_wait);
 }
 
 void TestFakeClockDeterministicProgression() {
