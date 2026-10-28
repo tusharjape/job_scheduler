@@ -3,7 +3,7 @@
 #include <chrono>
 #include <mutex>
 
-#include "scheduler/types.h"
+#include "job_scheduler/types.h"
 
 namespace scheduler {
 

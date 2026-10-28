@@ -1,4 +1,4 @@
-#include "scheduler/clock.h"
+#include "job_scheduler/clock.h"
 
 #include <cassert>
 #include <chrono>
@@ -7,7 +7,7 @@
 #include <thread>
 #include <vector>
 
-#include "scheduler/types.h"
+#include "job_scheduler/types.h"
 
 namespace scheduler {
 namespace {
